@@ -70,7 +70,8 @@ test('signDocument + verifyDocument round-trip passes', () => {
   const signed = signDocument(doc, agent)
 
   assert.ok(signed.proof, 'proof attached')
-  assert.equal(signed.proof.type, 'Ed25519Signature2026')
+  assert.equal(signed.proof.type, 'DataIntegrityProof')
+  assert.equal(signed.proof.cryptosuite, 'eddsa-jcs-2022')
   assert.equal(signed.proof.verificationMethod, agent.keyId)
 
   const valid = verifyDocument(signed, agent.didDocument)

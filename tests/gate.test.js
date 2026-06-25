@@ -32,10 +32,7 @@ function makeAgent () {
 function makeMandate (principal, agent, overrides = {}) {
   const now = new Date()
   return {
-    '@context': [
-      'https://www.w3.org/2018/credentials/v1',
-      'https://observerprotocol.org/contexts/delegation/v1'
-    ],
+    '@context': ['https://www.w3.org/ns/credentials/v2'],
     type: ['VerifiableCredential', 'ObserverDelegationCredential'],
     id: `urn:uuid:test-mandate-${hex(randomBytes(8))}`,
     issuer: principal.did,
@@ -55,7 +52,9 @@ function makeMandate (principal, agent, overrides = {}) {
         allowed_rails: ['ethereum-mainnet'],
         per_transaction_ceiling: { amount: '100', currency: 'USDT' },
         allowed_transaction_categories: ['payment']
-      }
+      },
+      delegationScope: { may_delegate_further: false },
+      enforcementMode: 'pre_transaction_check'
     },
     ...overrides
   }

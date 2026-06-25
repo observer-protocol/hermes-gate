@@ -38,9 +38,17 @@ async function resolveDidKey (did) {
  * Instantiated by the wallet-service user (atlas-wallet). Holds no wallet seed.
  *
  * Every evaluate() call re-reads and re-verifies the mandate from disk.
- * Mandate integrity comes from the Ed25519 proof, not filesystem secrecy
- * (the file is 644). Re-verification catches key rotation on the issuer side
- * without a gate restart.
+ * Mandate integrity comes from the DataIntegrityProof / eddsa-jcs-2022 Ed25519
+ * proof, not filesystem secrecy (the file is 644). Re-verification catches key
+ * rotation on the issuer side without a gate restart.
+ *
+ * COMMUNITY GATE SECURITY CAVEAT — action-input is agent-stated intent, not
+ * decoded on-chain bytes. A skill that declares amount: 5 but builds a
+ * transaction for 500 is caught by the enterprise RuntimeAdapter (which decodes
+ * actual on-chain bytes via ResolvedTransfer) and NOT by this gate. This is the
+ * headline v1 limitation: SpendGate enforces against what the agent declares,
+ * not what the transaction executes. The enterprise path (wdk-op-policy +
+ * runRuntimeAdapter) closes this gap via ProposalBinding.
  */
 export class SpendGate {
   /**
@@ -67,8 +75,8 @@ export class SpendGate {
    */
   async evaluate (action) {
     const raw = this._readMandate()
-    this._assertSignerBoundary(raw)
     const mandate = await this._verifyMandate(raw)
+    this._assertSignerBoundary(mandate)
 
     // withinScope expects action.amount as { amount, currency }
     const scopeAction = {
@@ -96,18 +104,23 @@ export class SpendGate {
     }
   }
 
-  _assertSignerBoundary (raw) {
-    const issuer = typeof raw.issuer === 'object' ? raw.issuer?.id : raw.issuer
-    const subject = raw.credentialSubject?.id
+  _assertSignerBoundary (mandate) {
+    // Extract the signing DID from the cryptographically-verified proof, not
+    // the raw issuer field. This ensures the check is on the key that actually
+    // signed, not a potentially spoofed issuer claim.
+    const vm = mandate.raw?.proof?.verificationMethod ?? ''
+    const signingDid = vm.includes('#') ? vm.split('#')[0] : vm
 
-    if (issuer === this.agentDid) {
-      throw new GateError('SELF_SIGNED_MANDATE', 'Mandate issuer equals agent DID — self-authorization denied')
+    if (signingDid === this.agentDid) {
+      throw new GateError('SELF_SIGNED_MANDATE', 'Mandate signing key belongs to agent DID — self-authorization denied')
     }
-    if (subject !== this.agentDid) {
-      throw new GateError('SUBJECT_MISMATCH', `Mandate subject ${subject} does not match agent DID ${this.agentDid}`)
+    if (mandate.subjectDid !== this.agentDid) {
+      throw new GateError('SUBJECT_MISMATCH', `Mandate subject ${mandate.subjectDid} does not match agent DID ${this.agentDid}`)
     }
-    if (this.trustedIssuers.length > 0 && !this.trustedIssuers.includes(issuer)) {
-      throw new GateError('UNTRUSTED_ISSUER', `Issuer ${issuer} is not in the trusted-issuer set`)
+    // Belt-and-suspenders: verifyMandate already checked raw.issuer; this
+    // confirms the verified signing DID is also in the trusted set.
+    if (this.trustedIssuers.length > 0 && !this.trustedIssuers.includes(signingDid)) {
+      throw new GateError('UNTRUSTED_ISSUER', `Signing DID ${signingDid} is not in the trusted-issuer set`)
     }
   }
 

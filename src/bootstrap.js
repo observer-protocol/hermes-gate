@@ -3,14 +3,17 @@
 
 'use strict'
 
-import { randomBytes, createHash } from 'node:crypto'
+import { randomBytes } from 'node:crypto'
 import { writeFileSync, mkdirSync, cpSync } from 'node:fs'
 import { execSync } from 'node:child_process'
 import { join } from 'node:path'
 import {
   createDidKeyAgent,
   signDocument,
-  DELEGATION_SCHEMA_V2_1
+  DELEGATION_SCHEMA_V2_1,
+  BOOTSTRAP_PATH_PRINCIPAL,
+  BOOTSTRAP_PATH_AGENT,
+  BOOTSTRAP_PATH_WALLET
 } from '@observer-protocol/wdk-protocol-trust'
 
 function hex (bytes) {
@@ -21,81 +24,6 @@ function toISO (d) {
   return d.toISOString().replace(/\.\d+Z$/, 'Z')
 }
 
-// ── eddsa-jcs-2022 signer ─────────────────────────────────────────────────────
-//
-// Produces a DataIntegrityProof / eddsa-jcs-2022 credential, which is the
-// only proof suite accepted by @observer-protocol/policy-engine's verifyWbc.
-//
-// The signing algorithm (W3C VC Data Integrity EdDSA Cryptosuites §3.4):
-//   hashData = SHA-256(JCS(proofConfig)) || SHA-256(JCS(unsecuredDocument))
-//
-// where proofConfig is the proof block without proofValue, and JCS is RFC 8785
-// sorted-key JSON canonicalization. The signature is Ed25519(hashData).
-//
-// Note: this is NOT the same as the legacy Ed25519Signature2026 suite used by
-// signDocument() in wdk-protocol-trust. Do not use signDocument() for WBCs.
-
-const BASE58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
-
-function base58Encode (buf) {
-  let zeros = 0
-  while (zeros < buf.length && buf[zeros] === 0) zeros++
-  let n = 0n
-  for (const b of buf) n = (n << 8n) | BigInt(b)
-  let out = ''
-  while (n > 0n) { out = BASE58[Number(n % 58n)] + out; n /= 58n }
-  return '1'.repeat(zeros) + out
-}
-
-function jcs (value) {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value)
-  if (Array.isArray(value)) return '[' + value.map(v => jcs(v ?? null)).join(',') + ']'
-  const keys = Object.keys(value).sort()
-  return '{' + keys.filter(k => value[k] !== undefined).map(k => JSON.stringify(k) + ':' + jcs(value[k])).join(',') + '}'
-}
-
-function sha256 (data) {
-  return createHash('sha256').update(data).digest()
-}
-
-/**
- * Sign a document using DataIntegrityProof / eddsa-jcs-2022.
- *
- * @param {Record<string, unknown>} doc - Unsigned document.
- * @param {{ keyId: string, sign: (bytes: Buffer) => string }} agent -
- *   A createDidKeyAgent() result. agent.sign(bytes) calls ed25519.sign(bytes, sk)
- *   via @noble/curves and returns a 64-byte signature as a hex string.
- * @returns {Record<string, unknown>} The signed document.
- */
-function signEddsaJcs2022 (doc, agent) {
-  const docNoProof = {}
-  for (const [k, v] of Object.entries(doc)) if (k !== 'proof') docNoProof[k] = v
-
-  const proofOptions = {
-    type: 'DataIntegrityProof',
-    cryptosuite: 'eddsa-jcs-2022',
-    created: toISO(new Date()),
-    verificationMethod: agent.keyId,
-    proofPurpose: 'assertionMethod'
-  }
-  // Context binding per W3C spec §3.4: copy @context from document to proof.
-  if ('@context' in docNoProof) proofOptions['@context'] = docNoProof['@context']
-
-  const hashData = Buffer.concat([
-    sha256(Buffer.from(jcs(proofOptions))),
-    sha256(Buffer.from(jcs(docNoProof)))
-  ])
-
-  // agent.sign calls signChallenge(hashData, privateKey) → ed25519.sign(hashData, sk)
-  // Returns 64-byte signature as hex string.
-  const sigHex = agent.sign(hashData)
-  const proofValue = 'z' + base58Encode(Buffer.from(sigHex, 'hex'))
-
-  return { ...docNoProof, proof: { ...proofOptions, proofValue } }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
  * Generate all key material, a signed SpendMandate, and a WalletBindingCredential
  * locally. No network required. Writes to `./output/`.
@@ -103,7 +31,10 @@ function signEddsaJcs2022 (doc, agent) {
  * The WBC is ALWAYS produced so every default community install is protected by
  * the BIND→LINK→AUTHORIZE gate. The passthrough (no-WBC) path in runRuntimeAdapter
  * is reserved for deliberate enterprise callers who explicitly opt out — it is
- * never the default.
+ * never the community default.
+ *
+ * Both credentials are signed with DataIntegrityProof / eddsa-jcs-2022 via
+ * signDocument(), which is the only proof suite accepted by the policy engine.
  *
  * @param {object} [opts]
  * @param {string} [opts.outputDir] - Output directory (default: ./output)
@@ -126,34 +57,33 @@ export function generate (opts = {}) {
 
   // 1. Principal key (operator — store offline)
   const principalSeed = randomBytes(32)
-  const principal = createDidKeyAgent(principalSeed, "m/observer-protocol'/principal/0/0/0")
+  const principal = createDidKeyAgent(principalSeed, BOOTSTRAP_PATH_PRINCIPAL)
 
   // 2. Agent identity key (agent user — carries no spend authority)
   const agentSeed = randomBytes(32)
-  const agent = createDidKeyAgent(agentSeed, "m/observer-protocol'/agent/0/0/0")
+  const agent = createDidKeyAgent(agentSeed, BOOTSTRAP_PATH_AGENT)
 
   // 3. Wallet identity key (wallet-service user — the wallet the WBC binds to)
-  // The wallet DID is derived deterministically from the wallet seed. The same seed
-  // always produces the same wallet DID, so the WBC is stable across restarts.
+  // BOOTSTRAP_PATH_WALLET is the canonical path. The WBC binds the DID derived
+  // from this path; if wallet-service derives its DID with a different path, the
+  // BIND step DENYs every call. Both sides must import this constant.
   const walletSeed = randomBytes(32)
-  const wallet = createDidKeyAgent(walletSeed, "m/observer-protocol'/wallet/0/0/0")
+  const wallet = createDidKeyAgent(walletSeed, BOOTSTRAP_PATH_WALLET)
 
-  // 4. Issue SpendMandate: principal → agent
-  // Note: allowed_transaction_categories is NOT included. Its enforcement depends on
-  // config.transactionCategory being set at runtime; in the default community install
-  // that field is not provided, so including it would cause every transaction to DENY
-  // silently (the category check fires fail-closed). The ceiling + rail constraints
-  // are the enforceable guards. Category-gating is a full-mode feature that requires
-  // runtime config to back it — never a silent no-op field in the manifest.
   const now = new Date()
   const validFrom = toISO(now)
   const validUntil = toISO(new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000))
 
+  // 4. Issue SpendMandate: principal → agent
+  //
+  // allowed_transaction_categories is NOT included. Its enforcement depends on
+  // config.transactionCategory being set at runtime; in the default community
+  // install that field is not provided, so including it would silently DENY
+  // every transaction (category check fires fail-closed). The ceiling + rail
+  // constraints are the enforceable guards. Category-gating requires runtime
+  // config to back it.
   const mandate = {
-    '@context': [
-      'https://www.w3.org/2018/credentials/v1',
-      'https://observerprotocol.org/contexts/delegation/v1'
-    ],
+    '@context': ['https://www.w3.org/ns/credentials/v2'],
     type: ['VerifiableCredential', 'ObserverDelegationCredential'],
     id: `urn:uuid:hermes-spend-mandate-${hex(randomBytes(8))}`,
     issuer: principal.did,
@@ -178,7 +108,9 @@ export function generate (opts = {}) {
           amount: ceilingAmount,
           currency: ceilCurrency
         }
-      }
+      },
+      delegationScope: { may_delegate_further: false },
+      enforcementMode: 'pre_transaction_check'
     }
   }
 
@@ -186,16 +118,13 @@ export function generate (opts = {}) {
 
   // 5. Issue WalletBindingCredential: principal binds wallet.did to itself.
   //
-  // The WBC is signed by the principal using eddsa-jcs-2022 (DataIntegrityProof),
-  // which is the only proof suite accepted by policy-engine's verifyWbc.
-  //
   // The LINK step (dev mode) checks: wbc.issuer === mandate.issuer.
   // Both are principal.did, so the LINK check passes for every default install.
   //
   // At runtime, ctx.wallet_id must equal wbc.credentialSubject.walletAddress
-  // (the BIND address check). The wallet service uses wallet.did as its identifier
-  // and passes it as ctx.wallet_id to the gate.
-  const wbc = signEddsaJcs2022({
+  // (the BIND address check). The wallet service uses wallet.did as its
+  // identifier and passes it as ctx.wallet_id to the gate.
+  const wbc = signDocument({
     '@context': ['https://www.w3.org/ns/credentials/v2'],
     id: `urn:uuid:hermes-wbc-${hex(randomBytes(8))}`,
     type: ['VerifiableCredential', 'WalletBindingCredential'],
@@ -270,12 +199,12 @@ export function generate (opts = {}) {
   console.log()
   console.log('PLACEMENT INSTRUCTIONS:')
   console.log()
-  console.log('  principal-key.json      → store OFFLINE (e.g. encrypted drive). Never on server.')
-  console.log('  agent-identity-key.json → /home/<agent-user>/identity/did-key.json  (mode 600, chown <agent-user>)')
-  console.log('  wallet-seed.json        → /home/<wallet-user>/secrets/wallet-seed.json  (mode 600, chown <wallet-user>)')
+  console.log('  principal-key.json       → store OFFLINE (e.g. encrypted drive). Never on server.')
+  console.log('  agent-identity-key.json  → /home/<agent-user>/identity/did-key.json  (mode 600, chown <agent-user>)')
+  console.log('  wallet-seed.json         → /home/<wallet-user>/secrets/wallet-seed.json  (mode 600, chown <wallet-user>)')
   console.log('  wallet-identity-key.json → /home/<wallet-user>/secrets/wallet-key.json  (mode 600, chown <wallet-user>)')
-  console.log('  spend-mandate.json      → /home/<agent-user>/spend-mandate.json  (mode 644)')
-  console.log('  wbc.json                → /home/<agent-user>/wbc.json  (mode 644)  [walletBindingCredentialPath in engine config]')
+  console.log('  spend-mandate.json       → /home/<agent-user>/spend-mandate.json  (mode 644)')
+  console.log('  wbc.json                 → /home/<agent-user>/wbc.json  (mode 644)  [walletBindingCredentialPath in engine config]')
   console.log()
   console.log('Runtime engine config: set walletBindingCredentialPath = /home/<agent-user>/wbc.json')
   console.log('Run `hermes-gate bootstrap provision` to copy files to the correct locations.')
@@ -294,17 +223,14 @@ export function provision ({ agentUser, walletUser, outputDir = './output' }) {
   const agentHome = `/home/${agentUser}`
   const walletHome = `/home/${walletUser}`
 
-  // Create directories
   execSync(`mkdir -p ${agentHome}/identity ${walletHome}/secrets`)
 
-  // Copy files
   cpSync(join(outputDir, 'agent-identity-key.json'), `${agentHome}/identity/did-key.json`)
   cpSync(join(outputDir, 'wallet-seed.json'), `${walletHome}/secrets/wallet-seed.json`)
   cpSync(join(outputDir, 'wallet-identity-key.json'), `${walletHome}/secrets/wallet-key.json`)
   cpSync(join(outputDir, 'spend-mandate.json'), `${agentHome}/spend-mandate.json`)
   cpSync(join(outputDir, 'wbc.json'), `${agentHome}/wbc.json`)
 
-  // Set permissions
   execSync(`chown -R ${agentUser}:${agentUser} ${agentHome}/identity ${agentHome}/spend-mandate.json ${agentHome}/wbc.json`)
   execSync(`chmod 600 ${agentHome}/identity/did-key.json`)
   execSync(`chmod 644 ${agentHome}/spend-mandate.json`)
@@ -359,11 +285,9 @@ export function verify ({ agentUser, walletUser }) {
   for (const { label, cmd } of checks) {
     try {
       execSync(cmd, { stdio: 'pipe' })
-      // If command succeeds, the boundary is BROKEN
       console.error(`FAIL [boundary broken]: ${label}`)
       failed++
     } catch {
-      // Non-zero exit = access denied = boundary holds
       console.log(`PASS [access denied]:   ${label}`)
       passed++
     }
