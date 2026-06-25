@@ -304,3 +304,87 @@ test('garbage input: non-object string → { allow: false }', async () => {
   const result = await boundaryEvaluate('not-an-object', gate)
   assert.equal(result.allow, false)
 })
+
+// ── SpendGate with WBC config (community-default BIND+LINK path) ──────────
+//
+// These tests confirm that SpendGate correctly delegates WBC enforcement to
+// runRuntimeAdapter. The detailed WBC logic is covered in wdk-protocol-trust's
+// runtime-adapter.test.js; here we prove the SpendGate wrapper wires it up.
+
+function makeWallet () {
+  return createDidKeyAgent(randomBytes(32), "m/observer-protocol'/wallet/0/0/0")
+}
+
+function makeWbc (principal, wallet) {
+  const now = new Date()
+  const toISO = (d) => d.toISOString().replace(/\.\d+Z$/, 'Z')
+  return {
+    '@context': ['https://www.w3.org/ns/credentials/v2'],
+    id: `urn:uuid:gate-wbc-${Buffer.from(randomBytes(8)).toString('hex')}`,
+    type: ['VerifiableCredential', 'WalletBindingCredential'],
+    issuer: principal.did,
+    validFrom: toISO(now),
+    validUntil: toISO(new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000)),
+    credentialSubject: {
+      id: principal.did,
+      walletAddress: wallet.did,
+      rail: 'ethereum-mainnet',
+      issuanceMode: 'dev'
+    }
+  }
+}
+
+function writeTmp (obj) {
+  const path = join(tmpdir(), `gate-wbc-${Buffer.from(randomBytes(4)).toString('hex')}.json`)
+  writeFileSync(path, JSON.stringify(obj, null, 2))
+  return path
+}
+
+test('SpendGate with WBC: valid mandate + matching wallet_id → allow', async () => {
+  const principal = makePrincipal()
+  const agent = makeAgent()
+  const wallet = makeWallet()
+
+  const signed = signDocument(makeMandate(principal, agent), principal)
+  const wbc = signDocument(makeWbc(principal, wallet), principal)
+  const mandatePath = writeMandateTmp(signed)
+  const wbcPath = writeTmp(wbc)
+
+  const gate = new SpendGate({
+    mandatePath,
+    agentDid: agent.did,
+    trustedIssuers: [principal.did],
+    walletBindingCredentialPath: wbcPath
+  })
+
+  const result = await gate.evaluate({
+    rail: 'ethereum-mainnet', amount: '50', currency: 'USDT', category: 'payment',
+    wallet_id: wallet.did
+  })
+  assert.equal(result.allow, true)
+})
+
+test('SpendGate with WBC: wallet_id mismatch → allow:false (not a GateError)', async () => {
+  const principal = makePrincipal()
+  const agent = makeAgent()
+  const wallet = makeWallet()
+  const wrongWallet = makeWallet()
+
+  const signed = signDocument(makeMandate(principal, agent), principal)
+  const wbc = signDocument(makeWbc(principal, wallet), principal)
+  const mandatePath = writeMandateTmp(signed)
+  const wbcPath = writeTmp(wbc)
+
+  const gate = new SpendGate({
+    mandatePath,
+    agentDid: agent.did,
+    trustedIssuers: [principal.did],
+    walletBindingCredentialPath: wbcPath
+  })
+
+  const result = await gate.evaluate({
+    rail: 'ethereum-mainnet', amount: '10', currency: 'USDT', wallet_id: wrongWallet.did
+  })
+  assert.equal(result.allow, false)
+  assert.ok(result.reasons.some(r => r.ruleField === 'wbc_address_mismatch'))
+})
