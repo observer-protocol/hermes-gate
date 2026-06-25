@@ -113,6 +113,66 @@ test('wrong rail → allow: false', async () => {
   assert.ok(result.reasons.some(r => r.ruleField === 'allowed_rails'))
 })
 
+// ── Gate: currency-mismatch bypass prevention ─────────────────────────────
+//
+// A recurring mandate written in USDT must deny any action in a different
+// currency. Two independent layers in withinScope enforce this:
+//   1. per_transaction_ceiling currency check (currencyMismatch / per_transaction_ceiling)
+//   2. authorizationConfig.recurring.ceiling_currency check (currencyMismatch / recurring.ceiling_currency)
+//
+// Both must pass for allow:true. Neither has a fall-through path that could
+// allow an uncovered-currency spend — both use if/else-if/else chains that
+// skip the amount comparison on currency mismatch.
+
+test('recurring mandate ceiling_currency:USDT, action in BTC → allow:false with explicit currencyMismatch reason', async () => {
+  const principal = makePrincipal()
+  const agent = makeAgent()
+  const signed = signDocument(makeMandate(principal, agent), principal)
+  const path = writeMandateTmp(signed)
+  const gate = makeGate(path, agent.did, [principal.did])
+
+  // Action is in BTC — mandate ceiling and recurring config are both in USDT
+  const result = await gate.evaluate({ rail: 'ethereum-mainnet', amount: '0.001', currency: 'BTC', category: 'payment' })
+
+  assert.equal(result.allow, false, 'must deny')
+  // At least one explicit currencyMismatch reason — must not be a silent pass or unhandled throw
+  const hasMismatchReason = result.reasons.some(r => r.ruleType === 'currencyMismatch')
+  assert.ok(hasMismatchReason, `expected currencyMismatch reason; got: ${JSON.stringify(result.reasons)}`)
+})
+
+test('recurring mandate ceiling_currency:USDT, action in sats → allow:false', async () => {
+  const principal = makePrincipal()
+  const agent = makeAgent()
+  const signed = signDocument(makeMandate(principal, agent), principal)
+  const path = writeMandateTmp(signed)
+  const gate = makeGate(path, agent.did, [principal.did])
+
+  const result = await gate.evaluate({ rail: 'lightning', amount: '5000', currency: 'sats', category: 'payment' })
+
+  assert.equal(result.allow, false, 'must deny')
+  const hasMismatchReason = result.reasons.some(r => r.ruleType === 'currencyMismatch')
+  assert.ok(hasMismatchReason, `expected currencyMismatch reason; got: ${JSON.stringify(result.reasons)}`)
+})
+
+test('currency mismatch does not reach amount comparison (verify no amountLimits reason on mismatch)', async () => {
+  const principal = makePrincipal()
+  const agent = makeAgent()
+  const signed = signDocument(makeMandate(principal, agent), principal)
+  const path = writeMandateTmp(signed)
+  const gate = makeGate(path, agent.did, [principal.did])
+
+  // Amount is tiny — if the gate fell through to amount comparison it would pass.
+  // Confirm it does not pass.
+  const result = await gate.evaluate({ rail: 'ethereum-mainnet', amount: '0.000001', currency: 'BTC', category: 'payment' })
+
+  assert.equal(result.allow, false, 'must deny even for tiny BTC amount')
+  // Must NOT have an amountLimits reason — denial is about currency, not amount
+  const hasAmountReason = result.reasons.some(r => r.ruleType === 'amountLimits')
+  assert.ok(!hasAmountReason, 'should not reach amount comparison when currency mismatches')
+  const hasMismatchReason = result.reasons.some(r => r.ruleType === 'currencyMismatch')
+  assert.ok(hasMismatchReason, 'should have currencyMismatch reason')
+})
+
 // ── Gate: signer-boundary checks ──────────────────────────────────────────
 
 test('self-signed mandate (issuer === agentDid) → SELF_SIGNED_MANDATE', async () => {
