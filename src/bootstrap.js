@@ -42,6 +42,8 @@ function toISO (d) {
  * @param {string[]} [opts.allowedRails] - Rails to permit (default: ethereum-mainnet + lightning)
  * @param {string} [opts.ceilingAmount] - Per-tx ceiling amount (default: 100)
  * @param {string} [opts.ceilCurrency] - Ceiling currency (default: USDT)
+ * @param {string} [opts.dailyCapAmount] - Rolling 24h cumulative cap; if set, adds cumulative_budget to mandate
+ * @param {string} [opts.dailyCapCurrency] - Currency for daily cap (defaults to ceilCurrency)
  * @returns {{ principalDid: string, agentDid: string, walletDid: string, mandateId: string }}
  */
 export function generate (opts = {}) {
@@ -50,7 +52,9 @@ export function generate (opts = {}) {
     agentLabel = 'agent',
     allowedRails = ['ethereum-mainnet', 'lightning'],
     ceilingAmount = '100',
-    ceilCurrency = 'USDT'
+    ceilCurrency = 'USDT',
+    dailyCapAmount = null,
+    dailyCapCurrency = null
   } = opts
 
   mkdirSync(outputDir, { recursive: true })
@@ -107,7 +111,14 @@ export function generate (opts = {}) {
         per_transaction_ceiling: {
           amount: ceilingAmount,
           currency: ceilCurrency
-        }
+        },
+        ...(dailyCapAmount ? {
+          cumulative_budget: {
+            amount: dailyCapAmount,
+            currency: dailyCapCurrency || ceilCurrency,
+            period: '24h'
+          }
+        } : {})
       },
       delegationScope: { may_delegate_further: false },
       enforcementMode: 'pre_transaction_check'
@@ -185,6 +196,9 @@ export function generate (opts = {}) {
   console.log('  Wallet DID:   ', wallet.did)
   console.log('  Mandate ID:   ', signedMandate.id)
   console.log('  Valid:        ', validFrom, '→', validUntil)
+  if (dailyCapAmount) {
+    console.log('  Daily cap:    ', dailyCapAmount, (dailyCapCurrency || ceilCurrency), '/ 24h rolling window (enforced via ledger)')
+  }
   console.log()
   console.log('PLACEMENT INSTRUCTIONS:')
   console.log()

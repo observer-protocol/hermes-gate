@@ -1,6 +1,6 @@
 {
   "name": "@observer-protocol/hermes-gate",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Fail-closed spend gate for Hermes agent operators — OP trust enforcement over a WDK wallet",
   "type": "module",
   "main": "index.js",
@@ -29,7 +29,7 @@
     "@observer-protocol/wdk-protocol-trust": "^0.2.0-beta.2"
   },
   "scripts": {
-    "test": "node --test tests/gate.test.js tests/bootstrap.test.js",
+    "test": "node --test tests/gate.test.js tests/bootstrap.test.js tests/ledger.test.js",
     "gate": "node src/mcp-server.js"
   },
   "exports": {

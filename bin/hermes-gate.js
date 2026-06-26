@@ -33,7 +33,9 @@ switch (sub) {
       agentLabel: flags.agentLabel,
       allowedRails: flags.allowedRails ? flags.allowedRails.split(',') : undefined,
       ceilingAmount: flags.ceilingAmount,
-      ceilCurrency: flags.ceilCurrency
+      ceilCurrency: flags.ceilCurrency,
+      dailyCapAmount: flags.dailyCapAmount,
+      dailyCapCurrency: flags.dailyCapCurrency
     })
     break
 

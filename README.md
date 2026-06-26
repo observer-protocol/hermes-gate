@@ -4,6 +4,8 @@ A fail-closed spend gate for Hermes agents. Set what your agent can pay and how 
 
 > **Status: community tier.** Binding-on-chain enforcement is on the roadmap. See *What this protects against* for exactly where the line is. We would rather you know the boundary than discover it.
 
+For the conceptual overview, threat model, and mandate design, see [docs/developer-guide.md](docs/developer-guide.md).
+
 ---
 
 ## What it is
@@ -141,6 +143,7 @@ mcp_servers:
 | `HERMES_AGENT_DID` | read from `HERMES_IDENTITY_PATH` | Agent DID; set explicitly to skip the identity file |
 | `HERMES_IDENTITY_PATH` | `~/identity/did-key.json` | Agent identity key file; ignored when `HERMES_AGENT_DID` is set |
 | `HERMES_WBC_PATH` | auto-discovered | Path to wbc.json; auto-discovered from mandate directory if unset |
+| `HERMES_LEDGER_PATH` | alongside mandate | Path to the JSONL spend ledger; set when mandate declares `cumulative_budget` |
 
 ---
 
@@ -161,8 +164,47 @@ npx @observer-protocol/hermes-gate bootstrap generate \
 | `--ceiling-amount` | `100` | Per-transaction ceiling |
 | `--ceil-currency` | `USDT` | Currency for the ceiling |
 | `--allowed-rails` | `ethereum-mainnet,lightning` | Comma-separated list of allowed rails |
+| `--daily-cap-amount` | none | Rolling 24h cumulative cap; enables ledger enforcement |
+| `--daily-cap-currency` | same as `--ceil-currency` | Currency for the daily cap |
 
-The ceiling applies to each individual transaction. There is no daily-cap field in the generated mandate; per-transaction ceiling is the enforced constraint. A spend on a rail not in `allowed-rails` is denied.
+The ceiling applies to each individual transaction. A spend on a rail not in `--allowed-rails` is denied. If `--daily-cap-amount` is set, the gate also enforces a rolling 24h cumulative cap via a spend ledger — see below.
+
+---
+
+## Rolling daily cap
+
+When `--daily-cap-amount` is set, `generate` adds a `cumulative_budget` field to the mandate. At runtime the gate enforces a rolling 24h cumulative cap in addition to the per-transaction ceiling.
+
+```
+npx @observer-protocol/hermes-gate bootstrap generate \
+  --ceiling-amount 10 \
+  --daily-cap-amount 30 \
+  --ceil-currency USDT
+```
+
+This generates a mandate where:
+- Each individual transaction is capped at 10 USDT.
+- The total authorized in any rolling 24h window is capped at 30 USDT.
+- Call #4 of four 10-USDT calls returns `allow: false` with `ruleType: 'cumulativeCap'`.
+
+**How it works.** The gate maintains a JSONL spend ledger at `HERMES_LEDGER_PATH` (default: alongside the mandate). On each `gate_evaluate`, after the full BIND-LINK-AUTHORIZE gate passes, the gate sums ledger entries from the trailing 24h for the same rail and currency. If the sum plus the proposed amount would exceed the cap, the call is denied. On allow, the entry is recorded.
+
+**Rolling window, not calendar day.** The window is `(now - 86400000ms)` to `now` — not a midnight reset. No timezone dependency, no gameable boundary.
+
+**Counts authorizations, not settlements.** The entry is written when the gate approves, not when the wallet service settles. Since `gate_execute` is a stub at the lite tier, counting settled transactions would never decrement the cap.
+
+**Durable across restart.** The ledger is a file on disk. Restarting the gate process does not reset the cap. The rolling window query picks up prior entries naturally.
+
+**Security boundary.** The ledger is on the agent-user side of the G1 boundary, mode 600. A malicious skill cannot reach it — it can only call `gate_evaluate`, and the gate controls the response. A fully-compromised gate process (which could delete the ledger file) is the binding-tier threat, out of scope for lite. The per-transaction ceiling and rail restriction remain enforced by the mandate signature regardless of ledger state.
+
+**To override the ledger path:**
+
+```
+HERMES_LEDGER_PATH=/home/atlas/spend-ledger.jsonl \
+  hermes-gate ...
+```
+
+The gate creates the ledger file on startup if it does not exist.
 
 ---
 
@@ -254,7 +296,7 @@ The same gate, wired one level deeper: into your wallet's signing path instead o
 
 ## Honest summary
 
-`hermes-gate` (community tier): a fail-closed spend gate that a malicious skill cannot bypass, enforcing per-transaction ceilings and rail restrictions against your agent's intended spends, binding on EVM stablecoins, advisory on Lightning, installed in one command with the wallet you already have. The binding tier, which enforces against decoded on-chain transactions and protects against your own agent going off-script, is the roadmap.
+`hermes-gate` (community tier): a fail-closed spend gate that a malicious skill cannot bypass, enforcing per-transaction ceilings, rolling 24h cumulative caps, and rail restrictions against your agent's intended spends, binding on EVM stablecoins, advisory on Lightning, installed in one command with the wallet you already have. The binding tier, which enforces against decoded on-chain transactions and protects against your own agent going off-script, is the roadmap.
 
 ---
 

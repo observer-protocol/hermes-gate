@@ -12,6 +12,7 @@ import {
   ListToolsRequestSchema
 } from '@modelcontextprotocol/sdk/types.js'
 import { SpendGate } from './gate.js'
+import { SpendLedger } from './spend-ledger.js'
 
 // ── Config from environment ───────────────────────────────────────────────
 
@@ -30,6 +31,32 @@ if (!WBC_PATH) {
   console.error('  This is only valid for enterprise callers explicitly opting out.')
   console.error('  Community installs: run `hermes-gate bootstrap generate` and either set')
   console.error('  HERMES_WBC_PATH=<path/to/wbc.json> or place wbc.json alongside the mandate.')
+}
+
+// Spend ledger for rolling 24h cumulative cap. Created only when the mandate
+// declares cumulative_budget (or HERMES_LEDGER_PATH is set explicitly).
+// Default path: alongside the mandate, on the agent-user side of the G1 boundary.
+const LEDGER_PATH = process.env.HERMES_LEDGER_PATH || join(dirname(resolve(MANDATE_PATH)), 'spend-ledger.jsonl')
+
+function loadSpendLedger () {
+  if (process.env.HERMES_LEDGER_PATH) {
+    return new SpendLedger(process.env.HERMES_LEDGER_PATH)
+  }
+  try {
+    const m = JSON.parse(readFileSync(MANDATE_PATH, 'utf8'))
+    if (m.credentialSubject?.actionScope?.cumulative_budget) {
+      return new SpendLedger(LEDGER_PATH)
+    }
+  } catch {
+    // mandate unreadable at startup — gate will surface this on first evaluate
+  }
+  return null
+}
+
+const spendLedger = loadSpendLedger()
+if (spendLedger) {
+  spendLedger.prune()
+  console.error(`hermes-gate: rolling 24h cap active — ledger at ${LEDGER_PATH}`)
 }
 
 // Load agent DID from identity file (agent-user's key, not wallet seed)
@@ -100,7 +127,8 @@ const gate = new SpendGate({
   mandatePath: MANDATE_PATH,
   agentDid,
   trustedIssuers: mandateIssuer ? [mandateIssuer] : [],
-  walletBindingCredentialPath: WBC_PATH || undefined
+  walletBindingCredentialPath: WBC_PATH || undefined,
+  spendLedger: spendLedger || undefined
 })
 
 const server = new Server(
