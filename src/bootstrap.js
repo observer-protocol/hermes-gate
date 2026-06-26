@@ -4,7 +4,7 @@
 'use strict'
 
 import { randomBytes } from 'node:crypto'
-import { writeFileSync, mkdirSync, cpSync } from 'node:fs'
+import { writeFileSync, mkdirSync, cpSync, chmodSync } from 'node:fs'
 import { execSync } from 'node:child_process'
 import { join } from 'node:path'
 import {
@@ -140,54 +140,43 @@ export function generate (opts = {}) {
   }, principal)
 
   // 6. Write output files
-  writeFileSync(
-    join(outputDir, 'principal-key.json'),
-    JSON.stringify({
-      _note: 'PRINCIPAL KEY — store offline, never on server',
-      seed_hex: hex(principalSeed),
-      did: principal.did,
-      public_key_hex: hex(principal.publicKey)
-    }, null, 2)
-  )
+  const principalKeyPath = join(outputDir, 'principal-key.json')
+  writeFileSync(principalKeyPath, JSON.stringify({
+    _note: 'PRINCIPAL KEY — store offline, never on server',
+    seed_hex: hex(principalSeed),
+    did: principal.did,
+    public_key_hex: hex(principal.publicKey)
+  }, null, 2))
+  chmodSync(principalKeyPath, 0o600)
 
-  writeFileSync(
-    join(outputDir, 'agent-identity-key.json'),
-    JSON.stringify({
-      _note: 'AGENT IDENTITY KEY — agent user only, mode 600',
-      seed_hex: hex(agentSeed),
-      did: agent.did,
-      public_key_hex: hex(agent.publicKey),
-      label: agentLabel
-    }, null, 2)
-  )
+  const agentKeyPath = join(outputDir, 'agent-identity-key.json')
+  writeFileSync(agentKeyPath, JSON.stringify({
+    _note: 'AGENT IDENTITY KEY — agent user only, mode 600',
+    seed_hex: hex(agentSeed),
+    did: agent.did,
+    public_key_hex: hex(agent.publicKey),
+    label: agentLabel
+  }, null, 2))
+  chmodSync(agentKeyPath, 0o600)
 
-  writeFileSync(
-    join(outputDir, 'wallet-seed.json'),
-    JSON.stringify({
-      _note: 'WALLET SEED — wallet-service user only, mode 600',
-      seed_hex: hex(walletSeed)
-    }, null, 2)
-  )
+  const walletSeedPath = join(outputDir, 'wallet-seed.json')
+  writeFileSync(walletSeedPath, JSON.stringify({
+    _note: 'WALLET SEED — wallet-service user only, mode 600',
+    seed_hex: hex(walletSeed)
+  }, null, 2))
+  chmodSync(walletSeedPath, 0o600)
 
-  writeFileSync(
-    join(outputDir, 'wallet-identity-key.json'),
-    JSON.stringify({
-      _note: 'WALLET IDENTITY KEY — wallet-service user only, mode 600',
-      seed_hex: hex(walletSeed),
-      did: wallet.did,
-      public_key_hex: hex(wallet.publicKey)
-    }, null, 2)
-  )
+  const walletKeyPath = join(outputDir, 'wallet-identity-key.json')
+  writeFileSync(walletKeyPath, JSON.stringify({
+    _note: 'WALLET IDENTITY KEY — wallet-service user only, mode 600',
+    seed_hex: hex(walletSeed),
+    did: wallet.did,
+    public_key_hex: hex(wallet.publicKey)
+  }, null, 2))
+  chmodSync(walletKeyPath, 0o600)
 
-  writeFileSync(
-    join(outputDir, 'spend-mandate.json'),
-    JSON.stringify(signedMandate, null, 2)
-  )
-
-  writeFileSync(
-    join(outputDir, 'wbc.json'),
-    JSON.stringify(wbc, null, 2)
-  )
+  writeFileSync(join(outputDir, 'spend-mandate.json'), JSON.stringify(signedMandate, null, 2))
+  writeFileSync(join(outputDir, 'wbc.json'), JSON.stringify(wbc, null, 2))
 
   console.log('Generated key material in', outputDir)
   console.log()
@@ -204,9 +193,18 @@ export function generate (opts = {}) {
   console.log('  wallet-seed.json         → /home/<wallet-user>/secrets/wallet-seed.json  (mode 600, chown <wallet-user>)')
   console.log('  wallet-identity-key.json → /home/<wallet-user>/secrets/wallet-key.json  (mode 600, chown <wallet-user>)')
   console.log('  spend-mandate.json       → /home/<agent-user>/spend-mandate.json  (mode 644)')
-  console.log('  wbc.json                 → /home/<agent-user>/wbc.json  (mode 644)  [walletBindingCredentialPath in engine config]')
+  console.log('  wbc.json                 → /home/<agent-user>/wbc.json  (mode 644)')
   console.log()
-  console.log('Runtime engine config: set walletBindingCredentialPath = /home/<agent-user>/wbc.json')
+  console.log('START THE GATE:')
+  console.log()
+  console.log('  HERMES_MANDATE_PATH=/home/<agent-user>/spend-mandate.json \\')
+  console.log('  HERMES_AGENT_DID=' + agent.did + ' \\')
+  console.log('  node /path/to/hermes-gate/src/mcp-server.js')
+  console.log()
+  console.log('  WBC auto-discovery: the gate looks for wbc.json in the same directory as the mandate.')
+  console.log('  No HERMES_WBC_PATH needed when wbc.json is placed alongside spend-mandate.json.')
+  console.log('  Set HERMES_WBC_PATH explicitly to load wbc.json from a different path.')
+  console.log()
   console.log('Run `hermes-gate bootstrap provision` to copy files to the correct locations.')
 
   return { principalDid: principal.did, agentDid: agent.did, walletDid: wallet.did, mandateId: signedMandate.id }
@@ -287,9 +285,20 @@ export function verify ({ agentUser, walletUser }) {
       execSync(cmd, { stdio: 'pipe' })
       console.error(`FAIL [boundary broken]: ${label}`)
       failed++
-    } catch {
-      console.log(`PASS [access denied]:   ${label}`)
-      passed++
+    } catch (e) {
+      const out = ((e.stderr || '') + (e.stdout || '')).toString()
+      if (/[Pp]ermission denied|cannot open|[Nn]o such file/.test(out)) {
+        console.log(`PASS [access denied]:   ${label}`)
+        passed++
+      } else if (/sudo:/.test(out)) {
+        console.error(`INCONCLUSIVE [sudo not configured]: ${label}`)
+        console.error('  Run as root or configure passwordless sudo for this user')
+        failed++
+      } else {
+        console.error(`INCONCLUSIVE [unexpected error]: ${label}`)
+        console.error(`  ${out.trim().split('\n')[0] || '(no stderr)'}`)
+        failed++
+      }
     }
   }
 

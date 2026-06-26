@@ -26,7 +26,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@observer-protocol/wdk-protocol-trust": "file:../wdk-protocol-trust"
+    "@observer-protocol/wdk-protocol-trust": "^0.2.0-beta.1"
   },
   "scripts": {
     "test": "node --test tests/gate.test.js tests/bootstrap.test.js",

@@ -3,7 +3,8 @@
 
 'use strict'
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
@@ -16,7 +17,20 @@ import { SpendGate } from './gate.js'
 
 const MANDATE_PATH = process.env.HERMES_MANDATE_PATH || `${process.env.HOME}/spend-mandate.json`
 const IDENTITY_PATH = process.env.HERMES_IDENTITY_PATH || `${process.env.HOME}/identity/did-key.json`
-const WBC_PATH = process.env.HERMES_WBC_PATH || null
+const WBC_PATH = (() => {
+  if (process.env.HERMES_WBC_PATH) return process.env.HERMES_WBC_PATH
+  const candidate = join(dirname(resolve(MANDATE_PATH)), 'wbc.json')
+  return existsSync(candidate) ? candidate : null
+})()
+
+if (!WBC_PATH) {
+  console.error('WARNING: No WalletBindingCredential configured.')
+  console.error('  HERMES_WBC_PATH is unset and wbc.json was not found alongside the mandate.')
+  console.error('  Gate is in pe-042 PASSTHROUGH mode — wallet identity is NOT verified.')
+  console.error('  This is only valid for enterprise callers explicitly opting out.')
+  console.error('  Community installs: run `hermes-gate bootstrap generate` and either set')
+  console.error('  HERMES_WBC_PATH=<path/to/wbc.json> or place wbc.json alongside the mandate.')
+}
 
 // Load agent DID from identity file (agent-user's key, not wallet seed)
 function loadAgentDid () {
