@@ -46,7 +46,7 @@ The bootstrap provisions **two system users**, and this is the security model �
 - The **agent user** holds only your agent's identity key. It carries no spend authority and **cannot read the wallet key.**
 - The **wallet-service user** holds the wallet seed and runs the gate. It is the only path to the signing key.
 
-Your agent reaches spend authorization only through the gate's narrow MCP interface. It cannot read the wallet seed directly. This is what makes the guarantee real: a hostile skill running as your agent has no path to the key — it has to go through the gate, and the gate fails closed.
+Your agent reaches spend authorization only through the gate's narrow MCP interface, and it cannot read the wallet seed directly. So a hostile skill running as your agent has no path to the key of its own — the only way to a signed payment is one the gate has approved, as long as the agent routes the payment through the gate (see *What this protects against* for that boundary).
 
 Run the acceptance test any time to confirm your install is correct:
 
@@ -77,9 +77,11 @@ You sign it with your principal key. Your agent operates under it and **cannot r
 
 Be clear-eyed about the boundary; it's the honest version and it's the one a serious operator wants.
 
-**It protects against the malicious-skill threat.** A hostile skill, a prompt injection, a poisoned MCP server — anything trying to make your agent act outside your mandate is stopped at the gate, fail-closed. This is the threat the agent community has actually been burned by, and the community tier closes it.
+**It protects against the malicious-skill threat.** A hostile skill, a prompt injection, a poisoned MCP server trying to push your agent past your mandate through its normal payment flow — checked against your mandate and denied, fail-closed. This is the threat the agent community has actually been burned by, and the community tier closes it.
 
-**The current limit: the gate enforces against your agent's *stated intent*.** Your agent tells the gate what it's about to do, and the gate checks that against your mandate. This trusts your agent to report its own actions honestly. It is complete protection against *external* manipulation of an honest agent.
+**How it works, precisely:** the gate is a check your agent calls before each spend (via MCP), against a mandate the agent can't rewrite. The wallet key lives in a separate user the agent can't read, so the only path to a signed payment is one the gate has approved — *as long as the agent routes the payment through the gate.* That last clause is the boundary, and it's worth being clear-eyed about.
+
+**What it does not catch — the bypass case.** Because the gate is something the agent *calls*, it protects against skills trying to manipulate an honest agent, but it trusts the agent to consult the gate in the first place. An agent compromised deeply enough to call a payment path directly, skipping the gate, isn't stopped by this tier. Making the check *unbypassable* — enforced in the call path itself, so every payment is intercepted whether or not the agent cooperates — is the enforcement tier on the roadmap (see below).
 
 **What it does not yet catch: a compromised or erratic agent that misreports.** If your own agent is itself compromised, hallucinating, or manipulated into building a transaction whose actual bytes differ from what it declares, the advisory tier checks the declaration, not the wire. Closing that gap — enforcing against the decoded on-chain transaction itself — is the **binding tier**, on the roadmap. It protects you not just from hostile skills but from your own agent going off-script.
 
@@ -91,10 +93,10 @@ Be clear-eyed about the boundary; it's the honest version and it's the one a ser
 
 ## Roadmap: the binding tier
 
-The same gate, wired one level deeper — into your wallet's signing path instead of beside it — so it enforces against the **actual transaction**, not your agent's description of it. That upgrade protects against the agent-itself threat (rogue, hallucinating, or simply spending past where you wanted), and brings binding Lightning enforcement. It's the same product at a deeper integration depth, not a different one — you don't switch, you deepen the gate you already run.
+The same gate, moved from beside your agent into the call path itself — so every payment is intercepted and checked against your mandate whether or not the agent cooperates, and against the **actual transaction** rather than the agent's description of it. That closes both gaps the lite tier leaves open: the bypass case (an agent skipping the gate) and the misreporting case (an agent declaring one thing and signing another). On Hermes specifically, the native mechanism for this is the `pre_tool_call` hook, which fires before every tool dispatch and can deny outright. It also brings binding Lightning enforcement. It's the same product at a deeper integration depth, not a different one — you don't switch, you deepen the gate you already run.
 
 ---
 
 ## Honest summary
 
-`hermes-gate` (community tier): a fail-closed spend gate that a malicious skill cannot bypass, enforcing per-transaction and rolling-24-hour spending limits and a rail allowlist against your agent's intended spends — binding on EVM stablecoins, advisory on Lightning, installed in one command with the wallet you already have. Counterparty filtering and the binding tier (enforcement against decoded on-chain transactions, protecting against your own agent, with binding Lightning) are the roadmap. Apache-2.0.
+`hermes-gate` (community tier): a fail-closed spend gate your agent calls before each payment, enforcing per-transaction and rolling-24-hour spending limits and a rail allowlist against a mandate the agent can't rewrite — binding on EVM stablecoins, advisory on Lightning, installed in one command with the wallet you already have. It stops malicious skills from pushing an honest agent past your limits; it does not yet stop an agent that bypasses the gate entirely or misreports its spend. Unbypassable enforcement (the `pre_tool_call` tier, against decoded on-chain transactions, with binding Lightning) and counterparty filtering are the roadmap. Apache-2.0.
