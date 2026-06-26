@@ -16,9 +16,11 @@ import { SpendGate } from './gate.js'
 
 const MANDATE_PATH = process.env.HERMES_MANDATE_PATH || `${process.env.HOME}/spend-mandate.json`
 const IDENTITY_PATH = process.env.HERMES_IDENTITY_PATH || `${process.env.HOME}/identity/did-key.json`
+const WBC_PATH = process.env.HERMES_WBC_PATH || null
 
 // Load agent DID from identity file (agent-user's key, not wallet seed)
 function loadAgentDid () {
+  if (process.env.HERMES_AGENT_DID) return process.env.HERMES_AGENT_DID
   try {
     const id = JSON.parse(readFileSync(IDENTITY_PATH, 'utf8'))
     return id.did || id.agent?.did
@@ -50,7 +52,7 @@ function parseAction (params) {
   if (params === null || typeof params !== 'object' || Array.isArray(params)) {
     throw new Error('params must be a non-null object')
   }
-  const { rail, amount, currency, category, note } = params
+  const { rail, amount, currency, category, note, wallet_id } = params
 
   if (typeof rail !== 'string' || rail.trim().length === 0) {
     throw new Error('rail must be a non-empty string')
@@ -71,7 +73,8 @@ function parseAction (params) {
     amount: amount.trim(),
     currency: currency.trim(),
     ...(typeof category === 'string' && category ? { category: category.trim() } : {}),
-    ...(typeof note === 'string' && note ? { note: note.trim() } : {})
+    ...(typeof note === 'string' && note ? { note: note.trim() } : {}),
+    ...(typeof wallet_id === 'string' && wallet_id ? { wallet_id: wallet_id.trim() } : {})
   }
 }
 
@@ -82,7 +85,8 @@ const mandateIssuer = loadMandateIssuer()
 const gate = new SpendGate({
   mandatePath: MANDATE_PATH,
   agentDid,
-  trustedIssuers: mandateIssuer ? [mandateIssuer] : []
+  trustedIssuers: mandateIssuer ? [mandateIssuer] : [],
+  walletBindingCredentialPath: WBC_PATH || undefined
 })
 
 const server = new Server(
@@ -166,6 +170,7 @@ const TOOLS = [
         amount: { type: 'string', description: 'Proposed amount as a positive decimal string' },
         currency: { type: 'string', description: 'Currency or token symbol (e.g. USDT, sats)' },
         category: { type: 'string', description: 'Transaction category (e.g. payment)' },
+        wallet_id: { type: 'string', description: 'Wallet DID or address — required for BIND address verification when WBC is configured' },
         note: { type: 'string', description: 'Optional human-readable note' }
       },
       required: ['rail', 'amount', 'currency']
@@ -181,6 +186,7 @@ const TOOLS = [
         amount: { type: 'string' },
         currency: { type: 'string' },
         category: { type: 'string' },
+        wallet_id: { type: 'string', description: 'Wallet DID or address — triggers BIND address verification' },
         tx_details: { type: 'object', description: 'Rail-specific transaction parameters' }
       },
       required: ['rail', 'amount', 'currency']
