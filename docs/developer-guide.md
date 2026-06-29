@@ -91,12 +91,39 @@ Be clear-eyed about the boundary; it's the honest version and it's the one a ser
 
 ---
 
-## Roadmap: the binding tier
+## The binding tier (available now)
 
-The same gate, moved from beside your agent into the call path itself — so every payment is intercepted and checked against your mandate whether or not the agent cooperates, and against the **actual transaction** rather than the agent's description of it. That closes both gaps the lite tier leaves open: the bypass case (an agent skipping the gate) and the misreporting case (an agent declaring one thing and signing another). On Hermes specifically, the native mechanism for this is the `pre_tool_call` hook, which fires before every tool dispatch and can deny outright. It also brings binding Lightning enforcement. It's the same product at a deeper integration depth, not a different one — you don't switch, you deepen the gate you already run.
+The binding tier wires the gate into Hermes's `pre_tool_call` hook — which fires before every tool call and can deny outright. This means payment commands are intercepted *before they execute*, whether or not the agent calls `gate_evaluate` first.
+
+**How it works.** When a payment CLI command appears in a `terminal` tool call (mppx, tempo wallet pay, agentcash pay, privy-agent-wallets pay), the plugin:
+
+1. Extracts the target URL from the command.
+2. Probes the URL to discover amount and currency from the `402 WWW-Authenticate` header (MPP format) or a BOLT11 invoice (L402).
+3. Calls the gate over HTTP (not MCP — no recursion risk) against your SpendMandate.
+4. Blocks the terminal call if the gate returns deny, or if the gate is unreachable (fail closed).
+
+**Install:**
+
+```
+npx @observer-protocol/hermes-gate plugin install
+```
+
+Then add to `~/.hermes/.env`:
+
+```
+HERMES_GATE_HTTP_PORT=8472
+```
+
+Restart hermes-gate with that env var set (the gate logs `HTTP endpoint listening on 127.0.0.1:8472 (binding tier)`), then restart your Hermes gateway. Payment commands are now intercepted before execution.
+
+**What this closes.** The community tier stopped malicious skills from pushing an *honest* agent past your mandate — but trusted the agent to call the gate first. The binding tier removes that trust: payment commands are blocked at the `pre_tool_call` layer regardless of whether the agent cooperated. An agent that tries to skip `gate_evaluate` and run `mppx` directly is stopped here.
+
+**What it does not yet close: the misreporting case.** The binding tier checks the payment command the agent *declares* (the mppx CLI call), not the signed on-chain transaction. An agent that could construct a payment outside the supported CLIs — calling a wallet API directly, for example — is out of scope for this tier. Closing that gap (enforcing against decoded on-chain bytes) is the next milestone.
+
+**MPP and the binding tier.** The MPP Agent skill auto-pays on HTTP 402 responses — the agent doesn't pause to call `gate_evaluate`, it just fires `mppx`. The `pre_tool_call` hook catches these exactly. This is the primary use case for the binding tier.
 
 ---
 
 ## Honest summary
 
-`hermes-gate` (community tier): a fail-closed spend gate your agent calls before each payment, enforcing per-transaction and rolling-24-hour spending limits and a rail allowlist against a mandate the agent can't rewrite — binding on EVM stablecoins, advisory on Lightning, installed in one command with the wallet you already have. It stops malicious skills from pushing an honest agent past your limits; it does not yet stop an agent that bypasses the gate entirely or misreports its spend. Unbypassable enforcement (the `pre_tool_call` tier, against decoded on-chain transactions, with binding Lightning) and counterparty filtering are the roadmap. Apache-2.0.
+`hermes-gate` (community + binding tier): a fail-closed spend gate enforcing per-transaction and rolling-24-hour spending limits and a rail allowlist against a mandate the agent can't rewrite — binding on EVM stablecoins, advisory on Lightning. The community tier (MCP) requires the agent to call `gate_evaluate` first. The binding tier (Hermes `pre_tool_call` plugin) intercepts payment CLI commands before execution, including MPP auto-payments, regardless of agent cooperation. It does not yet enforce against agents calling wallet APIs directly outside the supported CLIs. Counterparty filtering and decoded on-chain enforcement are next. Apache-2.0.
