@@ -1,0 +1,6 @@
+name: hermes-gate-spend-gate
+version: "0.2.0"
+description: "Fail-closed pre_tool_call spend gate — blocks payment commands that exceed your SpendMandate before execution."
+author: "Observer Protocol"
+hooks:
+  - pre_tool_call

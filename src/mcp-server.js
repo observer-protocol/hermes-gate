@@ -4,6 +4,7 @@
 'use strict'
 
 import { readFileSync, existsSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { dirname, join, resolve } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
@@ -270,6 +271,51 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     content: [{ type: 'text', text: JSON.stringify(result, null, 2) }]
   }
 })
+
+// ── HTTP endpoint for Hermes binding-tier plugin ──────────────────────────
+// Enabled when HERMES_GATE_HTTP_PORT is set. Exposes POST /gate/evaluate on
+// 127.0.0.1 only, sharing the same SpendGate instance (and thus the same
+// ledger) as the MCP server. The Python pre_tool_call plugin calls this to
+// intercept payment CLI commands (mppx, tempo wallet pay, etc.) before they
+// execute, without going through MCP (which would cause infinite recursion).
+
+const HTTP_PORT = process.env.HERMES_GATE_HTTP_PORT
+  ? parseInt(process.env.HERMES_GATE_HTTP_PORT, 10)
+  : null
+
+if (HTTP_PORT) {
+  const httpServer = createServer(async (req, res) => {
+    if (req.method === 'POST' && req.url === '/gate/evaluate') {
+      let body = ''
+      req.on('data', d => { body += d.toString() })
+      req.on('end', async () => {
+        let result
+        try {
+          const action = parseAction(JSON.parse(body))
+          result = await gate.evaluate(action)
+        } catch (err) {
+          result = {
+            allow: false,
+            reasons: [{ ruleType: 'gate_error', ruleField: 'input', message: err.message }],
+            advisories: [],
+            mandateValidUntil: ''
+          }
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(result))
+      })
+    } else {
+      res.writeHead(404)
+      res.end()
+    }
+  })
+
+  await new Promise((resolve, reject) => {
+    httpServer.listen(HTTP_PORT, '127.0.0.1', resolve)
+    httpServer.on('error', reject)
+  })
+  console.error(`hermes-gate: HTTP endpoint listening on 127.0.0.1:${HTTP_PORT} (binding tier)`)
+}
 
 // ── Start ─────────────────────────────────────────────────────────────────
 

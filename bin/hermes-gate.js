@@ -19,42 +19,86 @@ function parseFlags (args) {
   return flags
 }
 
-if (cmd !== 'bootstrap') {
-  console.error('Usage: hermes-gate bootstrap <generate|provision|verify> [flags]')
-  process.exit(1)
+async function runPluginInstall () {
+  const { homedir } = await import('node:os')
+  const { resolve, join } = await import('node:path')
+  const { mkdirSync, cpSync, existsSync } = await import('node:fs')
+  const { fileURLToPath } = await import('node:url')
+
+  const pluginSrc = resolve(fileURLToPath(new URL('../plugin', import.meta.url)))
+  if (!existsSync(pluginSrc)) {
+    console.error(`hermes-gate: plugin directory not found at ${pluginSrc}`)
+    process.exit(1)
+  }
+
+  const dest = join(homedir(), '.hermes', 'plugins', 'hermes-gate-spend-gate')
+  mkdirSync(dest, { recursive: true })
+  cpSync(pluginSrc, dest, { recursive: true })
+
+  console.log(`hermes-gate: binding-tier plugin installed to ${dest}`)
+  console.log()
+  console.log('Next steps:')
+  console.log('  1. Add to ~/.hermes/.env:')
+  console.log('       HERMES_GATE_HTTP_PORT=8472')
+  console.log('  2. Restart hermes-gate with that env var set.')
+  console.log('     The gate will log: "HTTP endpoint listening on 127.0.0.1:8472 (binding tier)"')
+  console.log('  3. Restart your Hermes gateway.')
+  console.log('     Payment commands (mppx, tempo wallet pay, agentcash, privy-agent-wallets)')
+  console.log('     are now intercepted before execution and checked against your SpendMandate.')
 }
 
-const flags = parseFlags(rest)
+switch (cmd) {
+  case 'bootstrap': {
+    const flags = parseFlags(rest)
+    switch (sub) {
+      case 'generate':
+        generate({
+          outputDir: flags.outputDir || './output',
+          agentLabel: flags.agentLabel,
+          allowedRails: flags.allowedRails ? flags.allowedRails.split(',') : undefined,
+          ceilingAmount: flags.ceilingAmount,
+          ceilCurrency: flags.ceilCurrency,
+          dailyCapAmount: flags.dailyCapAmount,
+          dailyCapCurrency: flags.dailyCapCurrency
+        })
+        break
 
-switch (sub) {
-  case 'generate':
-    generate({
-      outputDir: flags.outputDir || './output',
-      agentLabel: flags.agentLabel,
-      allowedRails: flags.allowedRails ? flags.allowedRails.split(',') : undefined,
-      ceilingAmount: flags.ceilingAmount,
-      ceilCurrency: flags.ceilCurrency,
-      dailyCapAmount: flags.dailyCapAmount,
-      dailyCapCurrency: flags.dailyCapCurrency
-    })
-    break
+      case 'provision':
+        provision({
+          agentUser: flags.agentUser,
+          walletUser: flags.walletUser,
+          outputDir: flags.outputDir || './output'
+        })
+        break
 
-  case 'provision':
-    provision({
-      agentUser: flags.agentUser,
-      walletUser: flags.walletUser,
-      outputDir: flags.outputDir || './output'
-    })
-    break
+      case 'verify':
+        verify({
+          agentUser: flags.agentUser,
+          walletUser: flags.walletUser
+        })
+        break
 
-  case 'verify':
-    verify({
-      agentUser: flags.agentUser,
-      walletUser: flags.walletUser
-    })
+      default:
+        console.error('Usage: hermes-gate bootstrap <generate|provision|verify>')
+        process.exit(1)
+    }
     break
+  }
+
+  case 'plugin': {
+    switch (sub) {
+      case 'install':
+        await runPluginInstall()
+        break
+
+      default:
+        console.error('Usage: hermes-gate plugin install')
+        process.exit(1)
+    }
+    break
+  }
 
   default:
-    console.error('Usage: hermes-gate bootstrap <generate|provision|verify>')
+    console.error('Usage: hermes-gate <bootstrap|plugin> <subcommand> [flags]')
     process.exit(1)
 }

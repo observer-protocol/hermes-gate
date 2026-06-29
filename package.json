@@ -1,6 +1,6 @@
 {
   "name": "@observer-protocol/hermes-gate",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Fail-closed spend gate for Hermes agent operators — OP trust enforcement over a WDK wallet",
   "type": "module",
   "main": "index.js",
@@ -10,7 +10,8 @@
   "files": [
     "index.js",
     "bin/",
-    "src/"
+    "src/",
+    "plugin/"
   ],
   "keywords": [
     "observer-protocol",
@@ -29,8 +30,9 @@
     "@observer-protocol/wdk-protocol-trust": "^0.2.0-beta.3"
   },
   "scripts": {
-    "test": "node --test tests/gate.test.js tests/bootstrap.test.js tests/ledger.test.js",
-    "gate": "node src/mcp-server.js"
+    "test": "node --test tests/gate.test.js tests/bootstrap.test.js tests/ledger.test.js tests/http.test.js tests/plugin.test.js",
+    "gate": "node src/mcp-server.js",
+    "prepublishOnly": "find plugin -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; exit 0"
   },
   "exports": {
     ".": "./index.js"
