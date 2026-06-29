@@ -124,6 +124,49 @@ Restart hermes-gate with that env var set (the gate logs `HTTP endpoint listenin
 
 ---
 
+## The canonical MPP payment path: gate_pay
+
+`gate_pay` is the one tool your agent should call for any payment behind an HTTP 402. It collapses two problems the interceptor tier still has: detection surface (you have to enumerate CLIs to intercept) and the evaluate-then-execute gap (the interceptor blocks or allows, but the gate never runs the payment itself, so a divergence between the declared amount and the actual payment is possible).
+
+With `gate_pay`, the gate is the payment path — not a guard around someone else's path:
+
+1. **Probe** — the gate fetches the 402 URL and reads amount and currency from `WWW-Authenticate`. If the header is missing or unparseable, the call returns `allowed: false` — fail closed.
+2. **Evaluate** — same full BIND→LINK→AUTHORIZE mandate check as `gate_evaluate`. If denied, nothing executes.
+3. **Reserve** — on approval, the amount is reserved against the rolling 24h cap immediately, before `mppx` runs. A concurrent `gate_pay` call sees the headroom already spoken for.
+4. **Execute** — the gate calls `mppx` directly. If mppx fails (non-zero exit), the reserve is released and the call returns `allowed: false`. Cap is restored.
+5. **Commit** — on successful mppx output, the reserve is converted to a permanent ledger entry.
+
+One case to know: if mppx exits 0 but the output does not parse (no payment hash, no success keyword), the gate treats it as "money likely moved" and commits at the probed amount with `reconciliation_required: true`. It never under-counts the cap.
+
+**Install gate_pay:**
+
+Copy the skill into your Hermes skills directory:
+
+```
+cp -r node_modules/@observer-protocol/hermes-gate/skills/hermes-gate-pay \
+      ~/.hermes/skills/hermes-gate-pay
+```
+
+Then set `HERMES_GATE_MPPX_PATH` if mppx is not on PATH, or omit it if `mppx` is globally installed.
+
+**Result shape:**
+
+| field | type | meaning |
+|---|---|---|
+| `allowed` | bool | Whether mandate approved and payment executed |
+| `amount` | string | Amount paid (confirmed if parsed, probed if `reconciliation_required`) |
+| `currency` | string | Currency |
+| `rail` | string | `lightning` |
+| `tx_ref` | string \| null | Payment hash from mppx; null if unparseable |
+| `reasons` | object[] | Denial reasons when `allowed: false` |
+| `reconciliation_required` | bool | `true` if mppx exited 0 but output did not parse |
+
+**What gate_pay closes vs what it does not.** gate_pay + the Hermes skill is **soft-binding**: the agent is routed through the gate by instruction. An adversarial agent that constructs a payment call outside the MCP interface still spends. "Bypass impossible" is not earned until the transacting key lives in a separate user the agent can't read (the binding tier on the roadmap). gate_pay is: one canonical path, fail-closed, the gate runs the payment and sees the real amount. That is the honest claim.
+
+The `pre_tool_call` interceptor from 0.2.0 remains active alongside gate_pay — they compose without double-debit. A cooperating agent calls `gate_pay` via MCP; the gate's internal `mppx` subprocess is invisible to Hermes's dispatcher, so `pre_tool_call` never fires on it. A non-cooperating agent that calls `mppx` directly still hits the interceptor.
+
+---
+
 ## Honest summary
 
-`hermes-gate` (community + binding tier): a fail-closed spend gate enforcing per-transaction and rolling-24-hour spending limits and a rail allowlist against a mandate the agent can't rewrite — binding on EVM stablecoins, advisory on Lightning. The community tier (MCP) requires the agent to call `gate_evaluate` first. The binding tier (Hermes `pre_tool_call` plugin) intercepts payment CLI commands before execution, including MPP auto-payments, regardless of agent cooperation. It does not yet enforce against agents calling wallet APIs directly outside the supported CLIs. Counterparty filtering and decoded on-chain enforcement are next. Apache-2.0.
+`hermes-gate` (community + binding + payment-path tiers): a fail-closed spend gate enforcing per-transaction and rolling-24-hour spending limits and a rail allowlist against a mandate the agent can't rewrite. The community tier (MCP `gate_evaluate`) requires the agent to call the gate first. The binding tier (Hermes `pre_tool_call` plugin) intercepts payment CLI commands before execution, including MPP auto-payments, regardless of agent cooperation. The payment-path tier (`gate_pay` MCP tool) makes the gate the canonical MPP payment path: probe-then-evaluate-then-execute, with a reserve/commit/release lifecycle against the rolling cap so the ledger always reflects confirmed payments. All three layers compose without double-debit. What is not yet closed: agents calling wallet APIs directly outside the gate (requires custody of the transacting key), and counterparty filtering and decoded on-chain enforcement. Apache-2.0.

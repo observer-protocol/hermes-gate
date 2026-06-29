@@ -14,9 +14,11 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import { SpendGate } from './gate.js'
 import { SpendLedger } from './spend-ledger.js'
+import { gatePay } from './gate-pay.js'
 
 // ── Config from environment ───────────────────────────────────────────────
 
+const MPPX_PATH = process.env.HERMES_GATE_MPPX_PATH || 'mppx'
 const MANDATE_PATH = process.env.HERMES_MANDATE_PATH || `${process.env.HOME}/spend-mandate.json`
 const IDENTITY_PATH = process.env.HERMES_IDENTITY_PATH || `${process.env.HOME}/identity/did-key.json`
 const WBC_PATH = (() => {
@@ -153,6 +155,27 @@ async function handleGateEvaluate (params) {
   }
 }
 
+// ── Tool: gate_pay (MPP payment path) ────────────────────────────────────
+
+async function handleGatePay (params) {
+  if (typeof params?.url !== 'string' || !params.url.trim()) {
+    return {
+      allowed: false,
+      amount: null,
+      currency: null,
+      rail: null,
+      tx_ref: null,
+      reasons: [{ ruleType: 'gate_error', ruleField: 'url', message: 'url is required' }],
+      advisories: []
+    }
+  }
+  return gatePay(params.url.trim(), {
+    gate,
+    mppxPath: MPPX_PATH,
+    walletId: typeof params.wallet_id === 'string' ? params.wallet_id.trim() : undefined
+  })
+}
+
 // ── Tool: gate_execute ────────────────────────────────────────────────────
 
 async function handleGateExecute (params) {
@@ -236,6 +259,18 @@ const TOOLS = [
     }
   },
   {
+    name: 'gate_pay',
+    description: 'Pay a 402-gated URL via mppx after evaluating against the SpendMandate. Use this instead of calling mppx directly — the gate checks your mandate (per-transaction ceiling, 24h rolling cap, rail allowlist), executes the payment, and records the spend atomically.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'The 402-protected URL to pay and access' },
+        wallet_id: { type: 'string', description: 'Wallet DID for BIND check when WalletBindingCredential is configured' }
+      },
+      required: ['url']
+    }
+  },
+  {
     name: 'gate_status',
     description: 'Return gate health and mandate metadata. Does not re-verify the mandate.',
     inputSchema: { type: 'object', properties: {} }
@@ -256,6 +291,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       break
     case 'gate_execute':
       result = await handleGateExecute(args)
+      break
+    case 'gate_pay':
+      result = await handleGatePay(args)
       break
     case 'gate_status':
       result = handleGateStatus()
