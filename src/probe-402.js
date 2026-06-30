@@ -18,13 +18,14 @@ import { request as httpRequest } from 'node:http'
  * Never throws.
  *
  * @param {string} url
- * @returns {Promise<{amount: string|null, currency: string|null}>}
+ * @returns {Promise<{amount: string|null, currency: string|null, resourcePreview: object|null}>}
  */
 export function probe402 (url) {
   return new Promise((resolve) => {
+    const empty = { amount: null, currency: null, resourcePreview: null }
     let parsed
     try { parsed = new URL(url) } catch {
-      resolve({ amount: null, currency: null })
+      resolve(empty)
       return
     }
 
@@ -37,16 +38,29 @@ export function probe402 (url) {
       headers: { 'User-Agent': 'hermes-gate/0.2.1 (spend-gate-probe)' },
       timeout: 5000
     }, (res) => {
-      res.resume()
-      if (res.statusCode === 402) {
-        resolve(_parse402Headers(res.headers))
-      } else {
-        resolve({ amount: null, currency: null })
-      }
+      const status = res.statusCode
+      const chunks = []
+      let bodySize = 0
+      res.on('data', (chunk) => {
+        bodySize += chunk.length
+        if (bodySize <= 65536) chunks.push(chunk)
+      })
+      res.on('end', () => {
+        if (status === 402) {
+          const headers = _parse402Headers(res.headers)
+          let resourcePreview = null
+          if (bodySize <= 65536 && chunks.length > 0) {
+            try { resourcePreview = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch {}
+          }
+          resolve({ ...headers, resourcePreview })
+        } else {
+          resolve(empty)
+        }
+      })
     })
 
-    req.on('error', () => resolve({ amount: null, currency: null }))
-    req.on('timeout', () => { req.destroy(); resolve({ amount: null, currency: null }) })
+    req.on('error', () => resolve(empty))
+    req.on('timeout', () => { req.destroy(); resolve(empty) })
     req.end()
   })
 }

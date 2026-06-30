@@ -55,8 +55,8 @@ export async function gatePay (url, { gate, mppxPath = 'mppx', walletId } = {}) 
     return fail([{ ruleType: 'gate_error', ruleField: 'url', message: 'Invalid URL' }])
   }
 
-  // 1. Probe 402 — discover amount and currency from WWW-Authenticate
-  const { amount, currency } = await probe402(url)
+  // 1. Probe 402 — discover amount, currency, and resource preview from WWW-Authenticate + body
+  const { amount, currency, resourcePreview } = await probe402(url)
   if (amount === null || currency === null) {
     return fail([{
       ruleType: 'probe_error',
@@ -126,7 +126,8 @@ export async function gatePay (url, { gate, mppxPath = 'mppx', walletId } = {}) 
       tx_ref: parsed.txRef,
       reasons: [],
       advisories,
-      mandateValidUntil
+      mandateValidUntil,
+      ...(resourcePreview != null ? { resource: resourcePreview } : {})
     }
   }
 

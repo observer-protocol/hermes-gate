@@ -31,6 +31,12 @@ export class GateError extends Error {
  * not what the transaction executes. The enterprise path (wdk-op-policy +
  * runRuntimeAdapter) closes this gap via ProposalBinding.
  */
+// The wdk-protocol-trust runtime adapter emits a cumulative_budget advisory
+// stating it is not enforced at the protocol layer. The gate's stateful ledger
+// enforces it, making that advisory misleading. Strip it before surfacing.
+const _stripAdvisories = (advisories) =>
+  (advisories || []).filter(a => a.field !== 'cumulative_budget')
+
 export class SpendGate {
   /**
    * @param {object} opts
@@ -123,7 +129,7 @@ export class SpendGate {
             ruleField: 'cumulative_budget',
             message: `Rolling 24h cap exceeded: ${windowSum.toFixed(2)} + ${proposed} > ${dailyCap.amount} ${dailyCap.currency} on rail ${action.rail}`
           }],
-          advisories: result.advisories,
+          advisories: _stripAdvisories(result.advisories),
           mandateValidUntil: result.mandateValidUntil
         }
       }
@@ -133,7 +139,7 @@ export class SpendGate {
     return {
       allow: result.allow,
       reasons: result.reasons,
-      advisories: result.advisories,
+      advisories: _stripAdvisories(result.advisories),
       mandateValidUntil: result.mandateValidUntil
     }
   }
@@ -202,7 +208,7 @@ export class SpendGate {
             ruleField: 'cumulative_budget',
             message: `Rolling 24h cap exceeded: ${windowSum.toFixed(2)} + ${proposed} > ${dailyCap.amount} ${dailyCap.currency} on rail ${action.rail}`
           }],
-          advisories: result.advisories,
+          advisories: _stripAdvisories(result.advisories),
           mandateValidUntil: result.mandateValidUntil
         }
       }
@@ -213,7 +219,7 @@ export class SpendGate {
       allow: result.allow,
       reserveId,
       reasons: result.reasons,
-      advisories: result.advisories,
+      advisories: _stripAdvisories(result.advisories),
       mandateValidUntil: result.mandateValidUntil
     }
   }

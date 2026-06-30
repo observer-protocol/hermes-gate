@@ -348,11 +348,20 @@ if (HTTP_PORT) {
     }
   })
 
-  await new Promise((resolve, reject) => {
-    httpServer.listen(HTTP_PORT, '127.0.0.1', resolve)
-    httpServer.on('error', reject)
+  await new Promise((resolve) => {
+    httpServer.listen(HTTP_PORT, '127.0.0.1', () => {
+      console.error(`hermes-gate: HTTP endpoint listening on 127.0.0.1:${HTTP_PORT} (binding tier)`)
+      resolve()
+    })
+    httpServer.on('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        console.error(`hermes-gate: port ${HTTP_PORT} already in use — HTTP endpoint disabled for this instance (MCP stdio active)`)
+      } else {
+        console.error(`hermes-gate: HTTP server error: ${err.message}`)
+      }
+      resolve()
+    })
   })
-  console.error(`hermes-gate: HTTP endpoint listening on 127.0.0.1:${HTTP_PORT} (binding tier)`)
 }
 
 // ── Start ─────────────────────────────────────────────────────────────────
